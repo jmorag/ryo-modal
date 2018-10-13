@@ -31,12 +31,6 @@ Major mode specific bindings will be bound to ryo-<major-mode>-map instead.")
 (defvar ryo-modal-cursor-type t
   "Cursor type used in `ryo-modal-mode'.  See description of `cursor-type'.")
 
-(defvar ryo-modal-cursor-color "red"
-  "The cursor color used in `ryo-modal-mode'.  If nil then use default color.")
-
-(defconst ryo-modal-default-cursor-color (face-attribute 'cursor :background)
-  "Default color of cursor.")
-
 (defvar ryo-modal-bindings-list ()
   "A list of all the bindings in `ryo-modal-mode'.
 It is more convenient to view this using `ryo-modal-bindings'.")
@@ -312,25 +306,15 @@ This function is meant to unbind keys set with `ryo-modal-set-key'."
   (if ryo-modal-mode
       (progn
         (add-hook 'post-command-hook #'ryo-modal-maybe-store-last-command)
-        (when ryo-modal-cursor-color
-          (add-hook 'post-command-hook #'ryo-modal--cursor-color-update))
         (setq-local cursor-type ryo-modal-cursor-type)
         (let ((map (eval (intern-soft (concat "ryo-" (symbol-name major-mode) "-map")))))
           (when map
             (make-local-variable 'minor-mode-overriding-map-alist)
             (push `(ryo-modal-mode . ,map) minor-mode-overriding-map-alist))))
     (remove-hook 'post-command-hook #'ryo-modal-maybe-store-last-command)
-    (remove-hook 'post-command-hook #'ryo-modal--cursor-color-update)
     (setq minor-mode-overriding-map-alist
           (assq-delete-all 'ryo-modal-mode minor-mode-overriding-map-alist))
-    (set-cursor-color ryo-modal-default-cursor-color)
     (setq-local cursor-type (default-value 'cursor-type))))
-
-(defun ryo-modal--cursor-color-update ()
-  "Set cursor color depending on if `ryo-modal-mode' is active or not."
-  (if ryo-modal-mode
-      (set-cursor-color ryo-modal-cursor-color)
-    (set-cursor-color ryo-modal-default-cursor-color)))
 
 ;; use-package integration
 (defun ryo-modal--extract-commands-from (args)
