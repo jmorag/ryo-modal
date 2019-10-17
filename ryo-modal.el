@@ -7,7 +7,7 @@
 ;; URL: http://github.com/Kungsgeten/ryo-modal
 ;; Keywords: convenience, modal, keys
 ;; Version: 0.4
-;; Package-Requires: ((emacs "24.4"))
+;; Package-Requires: ((emacs "25.1"))
 
 ;;; Commentary:
 
@@ -23,6 +23,7 @@
 ;;; Code:
 (require 'cl-lib)
 (require 'org-macs)
+(require 'seq)
 
 (defvar ryo-modal-mode-map (make-sparse-keymap)
   "General bindings in ryo-modal-mode.
@@ -48,13 +49,22 @@ add :norepeat t as a keyword."
 
 (defvar ryo-modal--non-repeating-commands '(ryo-modal-repeat))
 
+(defvar ryo-modal-mode-keymaps nil
+  "Holds a list of all ryo major mode specific keymaps.")
+
+(defun ryo-modal-derived-keymaps ()
+  "Get ryo major mode keymaps relevant to the current `major-mode'."
+  (mapcar (lambda (mode)
+            (eval (intern-soft (concat "ryo-" (symbol-name mode) "-map"))))
+          (seq-filter 'derived-mode-p ryo-modal-mode-keymaps)))
+
 (defun ryo-modal-maybe-store-last-command ()
   "Update `ryo-modal--last-command', if `this-command' is repeatable."
   (let ((cmd this-command))
     (when (and (where-is-internal
                 cmd
-                (list (append ryo-modal-mode-map
-                              (eval (intern-soft (format "ryo-%s-map" major-mode))))))
+                (list (apply 'append ryo-modal-mode-map
+                             (ryo-modal-derived-keymaps))))
                (not (member cmd ryo-modal--non-repeating-commands)))
       (setq ryo-modal--last-command cmd))))
 
@@ -103,7 +113,8 @@ command is unique."
               (unless (intern-soft map-name)
                 (set (intern map-name) (make-sparse-keymap))
                 (set-keymap-parent (eval (intern map-name))
-                                   ryo-modal-mode-map))
+                                   ryo-modal-mode-map)
+                (add-to-list 'ryo-modal-mode-keymaps mode))
               (define-key (eval (intern map-name)) (kbd key) `(,(plist-get args :name))))
           (define-key ryo-modal-mode-map (kbd key) `(,(plist-get args :name))))))
     (mapc (lambda (x)
@@ -118,8 +129,8 @@ command is unique."
               (setf (cddr x) (plist-put (cddr x) :first (append (plist-get (cddr x) :first)
                                                                 (plist-get args :first)))))
             (apply #'ryo-modal-key `(,(concat key " " (car x))
-                             ,@(cdr x)
-                             ,@(org-plist-delete args :name))))
+                                     ,@(cdr x)
+                                     ,@(org-plist-delete args :name))))
           target))
    ((and (require 'hydra nil t)
          (equal target :hydra))
@@ -153,25 +164,31 @@ command is unique."
                   (interactive)
                   (dolist (f (quote ,(plist-get args :first)))
                     (if (commandp f)
-                        (call-interactively f)
+                        (let ((real-this-command f))
+                          (call-interactively f))
                       (apply f nil)))
                   (if (and (stringp ',target)
                            (keymapp (key-binding (kbd ,target))))
                       (progn
                         (when ,(plist-get args :exit) (ryo-modal-mode -1))
                         (setq unread-command-events (listify-key-sequence (kbd ',target))))
-                    (call-interactively (if (stringp ',target)
-                                            (key-binding (kbd ,target))
-                                          ',target))
+                    (let ((real-this-command
+                           (if (stringp ',target)
+                               (key-binding (kbd ,target))
+                             ',target)))
+                      (call-interactively real-this-command))
                     (dolist (f (quote ,(plist-get args :then)))
                       (if (commandp f)
-                          (call-interactively f)
+                          (let ((real-this-command f))
+                            (call-interactively f))
                         (apply f nil)))
                     (when ,(plist-get args :exit) (ryo-modal-mode -1))
                     (when ,(plist-get args :read) (insert (read-string "Insert: ")))))))
              ((stringp target)
               (if (keymapp (key-binding (kbd target)))
-                  (setq unread-command-events (listify-key-sequence (kbd target)))
+                  ;; TODO: This doesn't seem to work with "keymaps inside of keymaps"
+                  (lambda () (interactive)
+                    (setq unread-command-events (listify-key-sequence (kbd target))))
                 (key-binding (kbd target))))
              (t
               target)))
@@ -183,7 +200,8 @@ command is unique."
             (unless (intern-soft map-name)
               (set (intern map-name) (make-sparse-keymap))
               (set-keymap-parent (eval (intern map-name))
-                                 ryo-modal-mode-map))
+                                 ryo-modal-mode-map)
+              (add-to-list 'ryo-modal-mode-keymaps mode))
             (define-key (eval (intern map-name)) (kbd key) func))
         (define-key ryo-modal-mode-map (kbd key) func))
       (add-to-list 'ryo-modal-bindings-list `(,key ,name ,@args))))))
@@ -205,11 +223,11 @@ See `ryo-modal-key' for more information."
     `(progn
        ,@(mapcar (lambda (x)
                    `(ryo-modal-key ,(car x)
-                           ,(if (stringp (cadr x))
-                                (cadr x)
-                              `(quote ,(cadr x)))
-                           ,@(nthcdr 2 x)
-                           ,@kw-list))
+                                   ,(if (stringp (cadr x))
+                                        (cadr x)
+                                      `(quote ,(cadr x)))
+                                   ,@(nthcdr 2 x)
+                                   ,@kw-list))
                  args))))
 
 ;;;###autoload
@@ -219,11 +237,11 @@ ARGS is the same as `ryo-modal-keys'."
   `(progn
      ,@(mapcar (lambda (x)
                  `(ryo-modal-key ,(car x)
-                         (if ,(stringp (cadr x))
-                             ,(cadr x)
-                           (quote ,(cadr x)))
-                         ,@(nthcdr 2 x)
-                         :mode ,mode))
+                                 (if ,(stringp (cadr x))
+                                     ,(cadr x)
+                                   (quote ,(cadr x)))
+                                 ,@(nthcdr 2 x)
+                                 :mode ,mode))
                args)))
 
 ;;;###autoload
@@ -307,10 +325,9 @@ This function is meant to unbind keys set with `ryo-modal-set-key'."
       (progn
         (add-hook 'post-command-hook #'ryo-modal-maybe-store-last-command)
         (setq-local cursor-type ryo-modal-cursor-type)
-        (let ((map (eval (intern-soft (concat "ryo-" (symbol-name major-mode) "-map")))))
-          (when map
-            (make-local-variable 'minor-mode-overriding-map-alist)
-            (push `(ryo-modal-mode . ,map) minor-mode-overriding-map-alist))))
+        (dolist (map (ryo-modal-derived-keymaps))
+          (make-local-variable 'minor-mode-overriding-map-alist)
+          (push `(ryo-modal-mode . ,map) minor-mode-overriding-map-alist)))
     (remove-hook 'post-command-hook #'ryo-modal-maybe-store-last-command)
     (setq minor-mode-overriding-map-alist
           (assq-delete-all 'ryo-modal-mode minor-mode-overriding-map-alist))
