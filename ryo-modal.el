@@ -1,12 +1,12 @@
 ;;; ryo-modal.el --- Roll your own modal mode      -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2016--2018  Erik Sjöstrand
+;; Copyright (C) 2016--present Erik Sjöstrand
 ;; MIT License
 
 ;; Author: Erik Sjöstrand <sjostrand.erik@gmail.com>
 ;; URL: http://github.com/Kungsgeten/ryo-modal
 ;; Keywords: convenience, modal, keys
-;; Version: 0.4
+;; Version: 0.45
 ;; Package-Requires: ((emacs "25.1"))
 
 ;;; Commentary:
@@ -52,21 +52,27 @@ add :norepeat t as a keyword."
 (defvar ryo-modal-mode-keymaps nil
   "Holds a list of all ryo major mode specific keymaps.")
 
+;; For compability with multiple-cursors
+(defvar mc/cmds-to-run-for-all nil)
+(defvar mc/cmds-to-run-once nil)
+
 (defun ryo-modal-derived-keymaps ()
-  "Get ryo major mode keymaps relevant to the current `major-mode'."
+  "Get ryo mode keymaps relevant to the current `major-mode' and/or minor-modes."
   (mapcar (lambda (mode)
             (eval (intern-soft (concat "ryo-" (symbol-name mode) "-map"))))
-          (seq-filter 'derived-mode-p ryo-modal-mode-keymaps)))
+          (seq-filter (lambda (elt) (or (derived-mode-p elt)
+                                        (and (boundp elt) (symbol-value elt))))
+                      ryo-modal-mode-keymaps)))
 
 (defun ryo-modal-maybe-store-last-command ()
   "Update `ryo-modal--last-command', if `this-command' is repeatable."
-  (let ((cmd this-command))
-    (when (and (where-is-internal
-                cmd
-                (list (apply 'append ryo-modal-mode-map
-                             (ryo-modal-derived-keymaps))))
+  (when ryo-modal-mode
+    (let ((cmd (lookup-key (apply 'append ryo-modal-mode-map
+                                  (ryo-modal-derived-keymaps))
+                           (this-command-keys))))
+      (if (and (commandp cmd)
                (not (member cmd ryo-modal--non-repeating-commands)))
-      (setq ryo-modal--last-command cmd))))
+          (setq ryo-modal--last-command cmd)))))
 
 ;;;###autoload
 (defun ryo-modal-key (key target &rest args)
@@ -91,17 +97,19 @@ or a command.  The following keywords exist:
 :name      A string, naming the binding.  If ommited get name from TARGET.
 :exit      If t then exit `ryo-modal-mode' after the command.
 :read      If t then prompt for a string to insert after the command.
-:mode      If set to a major mode symbol (e.g. 'org-mode) the key will only be
-           bound in that mode.
+:mode      If set to a major or minor mode symbol (e.g. 'org-mode) the key will
+           only be bound in that mode.
 :norepeat  If t then do not become a target of `ryo-modal-repeat'.
 :then      Can be a quoted list of additional commands that will be run after
            the TARGET.  These will not be shown in the name of the binding.
            (use :name to give it a nickname).
 :first     Similar to :then, but is run before the TARGET.
+:mc-all    If t the binding's command will be added to `mc/cmds-to-run-for-all'.
+           If 0 the binding's command will be added to `mc/cmds-to-run-once'.
 
-If any ARGS are given, except :mode and/or :norepeat, a new command named
-ryo:<hash>:<name> will be created. This is to make sure the name of the created
-command is unique."
+If any ARGS other han :mode, :norepeat or :mc-all are given, a
+new command named ryo:<hash>:<name> will be created. This is to
+make sure the name of the created command is unique."
   (cond
    ((listp target)
     (when (and (require 'which-key nil t)
@@ -157,7 +165,7 @@ command is unique."
                       (mapconcat #'documentation (plist-get args :then) "\n"))))
            (func
             (cond
-             ((org-plist-delete (org-plist-delete args :mode) :norepeat)
+             ((org-plist-delete (org-plist-delete (org-plist-delete args :mode) :norepeat) :mc-all)
               (eval
                `(defun ,(intern (concat "ryo:" hash ":" name)) ()
                   ,docs
@@ -195,6 +203,12 @@ command is unique."
            (mode (plist-get args :mode)))
       (when (plist-get args :norepeat)
         (add-to-list 'ryo-modal--non-repeating-commands func))
+      (let ((mc-all (plist-get args :mc-all)))
+        (when mc-all
+          (if (and (equal mc-all 0) (not (memq func mc/cmds-to-run-for-all)))
+              (add-to-list 'mc/cmds-to-run-once func)
+            (and (not (memq func mc/cmds-to-run-once))
+                 (add-to-list 'mc/cmds-to-run-for-all func)))))
       (if mode
           (let ((map-name (format "ryo-%s-map" mode)))
             (unless (intern-soft map-name)
@@ -243,6 +257,28 @@ ARGS is the same as `ryo-modal-keys'."
                                  ,@(nthcdr 2 x)
                                  :mode ,mode))
                args)))
+
+;;;###autoload
+(defun ryo-modal-command-then-ryo (binding &optional command keymap)
+  "Define key BINDING to COMMAND in KEYMAP. Then activate `ryo-modal-mode'.
+If COMMAND is excluded, use what is bound to right now in KEYMAP.
+If KEYMAP is excluded, use `current-global-map'."
+  (let* ((keymap (or keymap (current-global-map)))
+         (command (or command
+                      (lookup-key keymap (kbd binding))
+                      (user-error "No binding for '%s'" binding)))
+         (name (symbol-name command))
+         (hash (secure-hash 'md5 (format "%s-then-ryo" command)))
+         (docs (concat (documentation command)
+                       "\n\nThen enter `ryo-modal-mode'."))
+         (func
+          (eval
+           `(defun ,(intern (concat "ryo:" hash ":" name)) ()
+              ,docs
+              (interactive)
+              (call-interactively ',command)
+              (ryo-modal-mode 1)))))
+    (define-key keymap (kbd binding) func)))
 
 ;;;###autoload
 (defun ryo-modal-set-key (key command)
